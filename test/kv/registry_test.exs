@@ -3,7 +3,7 @@ defmodule KV.RegistryTest do
 
   setup context do
     {:ok, registry} = KV.Registry.start_link(context.test)
-    {:ok, registry: registry}
+    {:ok, registry: context.test}
   end
 
   test "spawns buckets", %{registry: registry} do
@@ -21,6 +21,9 @@ defmodule KV.RegistryTest do
     {:ok, bucket} = KV.Registry.lookup(registry, "shopping")
 
     Agent.stop(bucket)
+
+    # Do a call to ensure the registry processed the DOWN message
+    KV.Registry.create(registry, "bogus")
     assert KV.Registry.lookup(registry, "shopping") == :error
   end
 
@@ -28,11 +31,14 @@ defmodule KV.RegistryTest do
     KV.Registry.create(registry, "shopping")
     {:ok, bucket} = KV.Registry.lookup(registry, "shopping")
 
-    ref = Process.monitor(bucket)
     Process.exit(bucket, :shutdown)
 
-    assert_receive {:DOWN, ^ref, :process, _, _}
+    # Wait until the bucket is dead, notice that the ETS table is not cleared yet
+    ref = Process.monitor(bucket)
+    assert_receive {:DOWN, ^ref, _, _, _}
 
+    # Do a call to ensure the registry processed the DOWN message
+    KV.Registry.create(registry, "bogus")
     assert KV.Registry.lookup(registry, "shopping") == :error
   end
 end

@@ -3,32 +3,29 @@ defmodule KV.Registry do
 
   ### Server
 
-  def init(_) do
-    names = %{}
+  def init(table) do
+    names = :ets.new(table, [:named_table, read_concurrency: true])
     refs = %{}
     {:ok, {names, refs}}
   end
 
-  def handle_call({:lookup, name}, _, {names, _} = state) do
-    {:reply, Map.fetch(names, name), state}
-  end
-
-  def handle_cast({:create, name}, {names, refs} = state) do
-    if Map.has_key?(names, name) do
-      {:noreply, state}
-    else
-      {:ok, bucket} = KV.Bucket.Supervisor.start_bucket()
-      ref = Process.monitor(bucket)
-      new_names = Map.put(names, name, bucket)
-      new_refs = Map.put(refs, ref, name)
-      {:noreply, {new_names, new_refs}}
+  def handle_call({:create, name}, _, {names, refs} = state) do
+    case lookup(names, name) do
+      {:ok, bucket} ->
+        {:reply, bucket, state}
+      :error ->
+        {:ok, bucket} = KV.Bucket.Supervisor.start_bucket()
+        ref = Process.monitor(bucket)
+        new_refs = Map.put(refs, ref, name)
+        :ets.insert(names, {name, bucket})
+        {:reply, bucket, {names, new_refs}}
     end
   end
 
   def handle_info({:DOWN, ref, :process, _, _}, {names, refs}) do
     {name, new_refs} = Map.pop(refs, ref)
-    new_names = Map.delete(names, name)
-    {:noreply, {new_names, new_refs}}
+    :ets.delete(names, name)
+    {:noreply, {names, new_refs}}
   end
 
   def handle_info(_msg, state) do
@@ -38,14 +35,17 @@ defmodule KV.Registry do
   ### Client
 
   def start_link(name) do
-    GenServer.start_link(__MODULE__, :ok, name: name)
+    GenServer.start_link(__MODULE__, name, name: name)
   end
 
   def lookup(registry, name) do
-    GenServer.call(registry, {:lookup, name})
+    case :ets.lookup(registry, name) do
+      [{^name, value}] -> {:ok, value}
+      _ -> :error
+    end
   end
 
   def create(registry, name) do
-    GenServer.cast(registry, {:create, name})
+    GenServer.call(registry, {:create, name})
   end
 end
